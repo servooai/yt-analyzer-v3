@@ -108,17 +108,16 @@ def get_transcript(video_id):
             if isinstance(data, list):
                 all_text = []
                 for item in data:
-                    if item.get('lang', '').startswith('en'):
+                    lang = item.get('lang', '')
+                    if lang.startswith('en'):
                         text = item.get('text', '')
                         if text:
                             all_text.append(text)
+                # If no English, use any available language
+                if not all_text and data:
+                    all_text = [item.get('text', '') for item in data if item.get('text')]
                 if all_text:
                     return ' '.join(all_text)
-                # If no English, return all available
-                if data:
-                    all_text = [item.get('text', '') for item in data if item.get('text')]
-                    if all_text:
-                        return ' '.join(all_text)
             
             # Handle object response
             if data.get('content'):
