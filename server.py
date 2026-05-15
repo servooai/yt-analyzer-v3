@@ -104,17 +104,21 @@ def get_transcript(video_id):
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read())
             
-            # Handle array response
+            # Handle array response - collect ALL text entries
             if isinstance(data, list):
-                # Try to find English transcript first
+                all_text = []
                 for item in data:
                     if item.get('lang', '').startswith('en'):
                         text = item.get('text', '')
                         if text:
-                            return text
-                # If no English, return first available
+                            all_text.append(text)
+                if all_text:
+                    return ' '.join(all_text)
+                # If no English, return all available
                 if data:
-                    return data[0].get('text', '')
+                    all_text = [item.get('text', '') for item in data if item.get('text')]
+                    if all_text:
+                        return ' '.join(all_text)
             
             # Handle object response
             if data.get('content'):
@@ -170,12 +174,12 @@ def transcript():
     if not video_id:
         return jsonify({'error': 'Invalid video ID'}), 400
 
-    transcript = get_transcript(video_id)
-    if transcript:
+    transcript_text = get_transcript(video_id)
+    if transcript_text:
         return jsonify({
             'success': True, 
-            'transcript': transcript,
-            'length': len(transcript)
+            'transcript': transcript_text,
+            'length': len(transcript_text)
         })
 
     return jsonify({
