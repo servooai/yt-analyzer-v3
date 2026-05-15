@@ -96,9 +96,7 @@ def get_transcript(video_id):
     Railway allows connections to YouTube unlike Render.
     """
     
-    # ============================================
-    #  METHOD 1: Direct YouTube subtitle download
-    # ============================================
+    # METHOD 1: Direct YouTube subtitle download
     try:
         for lang in ['en', 'en-US', 'en-GB']:
             try:
@@ -112,7 +110,6 @@ def get_transcript(video_id):
                     if content and len(content) > 100:
                         decoded = content.decode('utf-8', errors='ignore')
                         if '<?xml' in decoded or '<tt' in decoded or '<text' in decoded:
-                            # Parse TTML/XML format
                             texts = re.findall(r'<text[^>]*>([^<]+)</text>', decoded)
                             if texts:
                                 lines = []
@@ -123,20 +120,16 @@ def get_transcript(video_id):
                                 if lines:
                                     return '\n'.join(lines)
                         return decoded
-            except Exception as e:
-                print(f"Lang {lang} failed: {e}")
+            except:
                 continue
     except Exception as e:
         print(f"Method 1 failed: {e}")
     
-    # ============================================
-    #  METHOD 2: youtube-transcript-api
-    # ============================================
+    # METHOD 2: youtube-transcript-api
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
         from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
         
-        # Try list_transcripts first
         try:
             transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
             
@@ -155,7 +148,6 @@ def get_transcript(video_id):
         except:
             pass
         
-        # Try legacy get_transcript
         try:
             transcript = YouTubeTranscriptApi.get_transcript(video_id)
             lines = []
@@ -185,6 +177,41 @@ def health():
         'ai': bool(client),
         'google': bool(GOOGLE_API_KEY)
     })
+
+@app.route('/debug-network', methods=['GET'])
+def debug_network():
+    """Test network connectivity to YouTube"""
+    results = {}
+    
+    # Test 1: YouTube oembed
+    try:
+        url = "https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ&format=json"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            results['oembed'] = 'SUCCESS'
+    except Exception as e:
+        results['oembed'] = f'FAILED: {str(e)}'
+    
+    # Test 2: YouTube transcript endpoint
+    try:
+        url = "https://www.youtube.com/api/timedtext?v=dQw4w9WgXcQ&lang=en"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            content = resp.read()
+            results['timedtext'] = f'SUCCESS - {len(content)} bytes'
+    except Exception as e:
+        results['timedtext'] = f'FAILED: {str(e)}'
+    
+    # Test 3: youtube-transcript-api
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        transcripts = YouTubeTranscriptApi.list_transcripts('dQw4w9WgXcQ')
+        results['transcript_api'] = 'SUCCESS - found transcripts'
+        results['available'] = [str(t) for t in transcripts]
+    except Exception as e:
+        results['transcript_api'] = f'FAILED: {type(e).__name__}: {str(e)}'
+    
+    return jsonify(results)
 
 @app.route('/video', methods=['GET'])
 def video():
