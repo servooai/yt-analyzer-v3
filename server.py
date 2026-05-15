@@ -27,9 +27,9 @@ def extract_video_id(url_or_id):
             return match.group(1)
     return None
 
-def ask_ai(prompt, system_prompt="أنت مساعد ذكي"):
+def ask_ai(prompt, system_prompt="You are a YouTube content analyst"):
     if not client:
-        return "❌ OpenAI API غير مربوط"
+        return "❌ OpenAI API not configured"
     try:
         response = client.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -42,22 +42,19 @@ def ask_ai(prompt, system_prompt="أنت مساعد ذكي"):
         )
         return response.choices[0].message.content
     except Exception as e:
-        return f"❌ خطأ: {str(e)}"
+        return f"❌ Error: {str(e)}"
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({
-        'status': 'ok',
-        'openai_enabled': bool(client)
-    })
+    return jsonify({'status': 'ok', 'openai_enabled': bool(client)})
 
 @app.route('/transcript', methods=['GET'])
 def get_transcript():
-    video_id = request.args.get('video_id', '')
-    if not video_id:
+    video_input = request.args.get('video_id', '')
+    if not video_input:
         return jsonify({'error': 'Video ID required'}), 400
     
-    video_id = extract_video_id(video_id)
+    video_id = extract_video_id(video_input)
     if not video_id:
         return jsonify({'error': 'Invalid video ID'}), 400
     
@@ -103,31 +100,37 @@ def analyze():
     channel = data.get('channel', '')
 
     prompts = {
-        'transcript': f"""Analyze this YouTube video:
+        'transcript': f"""You are a YouTube content analyst. Based on:
 Title: {title}
 Channel: {channel}
 Transcript: {transcript[:4000]}
-Return JSON with: mainTopics (5-8), keyPoints (20), fullScript, hookUsed""",
 
-        'hook': f"""Analyze hook for:
+Return JSON with: mainTopics (5-8 items), keyPoints (20 items), fullScript, hookUsed""",
+
+        'hook': f"""Analyze the hook for:
+Title: {title}
+Channel: {channel}
+Transcript: {transcript[:3000]}
+
+Return JSON with: hookAnalysis, whyViral (5-7 items), suggestedHooks (10 items)""",
+
+        'script': f"""Generate a similar script:
 Title: {title}
 Transcript: {transcript[:3000]}
-Return JSON with: hookAnalysis, whyViral (5-7), suggestedHooks (10)""",
 
-        'script': f"""Generate similar script:
-Title: {title}
-Transcript: {transcript[:3000]}
-Return JSON with: newHook, newScript, keyMoments (5-7)""",
+Return JSON with: newHook, newScript, keyMoments (5-7 items)""",
 
-        'titles': f"""Generate 10 titles for:
+        'titles': f"""Generate 10 powerful titles for:
 {title}
 Transcript: {transcript[:2000]}
+
 Return JSON array of 10 titles""",
 
         'desc': f"""Generate description and hashtags:
 Title: {title}
 Transcript: {transcript[:2000]}
-Return JSON with: description (300-500 words), hashtags (15)"""
+
+Return JSON with: description (300-500 words), hashtags (15 items)"""
     }
 
     if tool not in prompts:
