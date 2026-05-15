@@ -1,6 +1,5 @@
 """
 YouTube AI Analyzer - Backend Server
-Flask + YouTube Transcript API + OpenAI
 """
 
 import os
@@ -14,20 +13,16 @@ from openai import OpenAI
 app = Flask(__name__)
 CORS(app)
 
-# ============================================
-#  CONFIGURATION
-# ============================================
+# CONFIG
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 GOOGLE_API_KEY = os.environ.get('GOOGLE_API_KEY', '')
 
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
-ytt = YouTubeTranscriptApi()
 
 # ============================================
 #  HELPERS
 # ============================================
 def extract_video_id(url_or_id):
-    """Extract video ID from URL or return if already ID"""
     patterns = [
         r'(?:v=|youtu\.be\/|embed\/|shorts\/)([a-zA-Z0-9_-]{11})',
         r'^([a-zA-Z0-9_-]{11})$'
@@ -39,7 +34,6 @@ def extract_video_id(url_or_id):
     return None
 
 def ask_ai(prompt, system=None):
-    """Call OpenAI API with prompt"""
     if not client:
         return None
     messages = []
@@ -50,77 +44,56 @@ def ask_ai(prompt, system=None):
         resp = client.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=messages,
-            temperature=0.7,
-            max_tokens=3500
+            temperature=0.8,
+            max_tokens=2000
         )
         return resp.choices[0].message.content
     except Exception as e:
         return f"Error: {e}"
 
-def parse_transcript_xml(xml_text):
-    """Parse YouTube transcript XML format"""
-    texts = re.findall(r'<text[^>]*>([^<]+)</text>', xml_text)
-    starts = re.findall(r'start="([\d.]+)"', xml_text)
-    result = []
-    for i, text in enumerate(texts):
-        text = text.strip().replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
-        if text:
-            start = float(starts[i]) if i < len(starts) else 0
-            mins = int(start) // 60
-            secs = int(start) % 60
-            result.append(f"[{mins:02d}:{secs:02d}] {text}")
-    return '\n'.join(result)
-
-# ============================================
-#  ROUTES
-# ============================================
-@app.route('/health', methods=['GET'])
-def health():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'ok',
-        'ai': bool(client),
-        'google': bool(GOOGLE_API_KEY)
-    })
-
-@app.route('/stats', methods=['GET'])
-def stats():
-    """Get video statistics via YouTube API"""
-    video_id = request.args.get('video_id', '')
-    video_id = extract_video_id(video_id)
-    if not video_id:
-        return jsonify({'error': 'Invalid video ID'}), 400
-
-    if GOOGLE_API_KEY:
-        try:
-            import urllib.request
-            url = f"https://www.googleapis.com/youtube/v3/videos?part=statistics&id={video_id}&key={GOOGLE_API_KEY}"
-            data = json.loads(urllib.request.urlopen(url).read())
-            if data.get('items'):
-                s = data['items'][0]['statistics']
-                return jsonify({
-                    'success': True,
-                    'stats': {
-                        'viewCount': s.get('viewCount', '0'),
-                        'likeCount': s.get('likeCount', '0'),
-                        'commentCount': s.get('commentCount', '0')
-                    }
-                })
-        except:
-            pass
-
-    return jsonify({'success': True, 'stats': {'viewCount': '0', 'likeCount': '0', 'commentCount': '0'}})
-
-@app.route('/transcript', methods=['GET'])
-def transcript():
-    """Get YouTube video transcript"""
-    video_id = request.args.get('video_id', '')
-    video_id = extract_video_id(video_id)
-    if not video_id:
-        return jsonify({'error': 'Invalid video ID'}), 400
-
+def get_youtube_data(video_id):
+    """Get video data from YouTube oEmbed API"""
     try:
-        transcript_list = ytt.fetch(video_id, languages=['en', 'ar', 'es', 'de', 'fr', 'pt', 'it', 'ru', 'zh'])
+        import urllib.request
+        url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        data = json.loads(urllib.request.urlopen(req, timeout=10).read())
+        return {
+            'title': data.get('title', ''),
+            'author': data.get('author_name', ''),
+            'thumbnail': data.get('thumbnail_url', '')
+        }
+    except:
+        return None
+
+def get_video_stats(video_id):
+    """Get video stats from YouTube Data API"""
+    if not GOOGLE_API_KEY:
+        return {'viewCount': '0', 'likeCount': '0', 'commentCount': '0'}
+    try:
+        import urllib.request
+        url = f"https://www.googleapis.com/youtube/v3/videos?part=statistics,snippet&id={video_id}&key={GOOGLE_API_KEY}"
+        data = json.loads(urllib.request.urlopen(url, timeout=10).read())
+        if data.get('items'):
+            item = data['items'][0]
+            stats = item.get('statistics', {})
+            snippet = item.get('snippet', {})
+            return {
+                'viewCount': stats.get('viewCount', '0'),
+                'likeCount': stats.get('likeCount', '0'),
+                'commentCount': stats.get('commentCount', '0'),
+                'title': snippet.get('title', ''),
+                'channel': snippet.get('channelTitle', '')
+            }
+    except:
+        pass
+    return None
+
+def get_transcript(video_id):
+    """Get YouTube transcript"""
+    try:
+        ytt = YouTubeTranscriptApi()
+        transcript_list = ytt.fetch(video_id, languages=['en', 'ar', 'es', 'de', 'fr'])
         lines = []
         for entry in transcript_list:
             mins = int(entry.start) // 60
@@ -128,82 +101,171 @@ def transcript():
             text = entry.text.replace('\n', ' ').strip()
             if text:
                 lines.append(f"[{mins:02d}:{secs:02d}] {text}")
-        if lines:
-            return jsonify({'success': True, 'transcript': '\n'.join(lines)})
-        return jsonify({'error': 'No transcript available'}), 404
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return '\n'.join(lines) if lines else None
+    except:
+        return None
+
+# ============================================
+#  ROUTES
+# ============================================
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({
+        'status': 'ok',
+        'ai': bool(client),
+        'google': bool(GOOGLE_API_KEY)
+    })
+
+@app.route('/video', methods=['GET'])
+def video():
+    """Get video info and stats"""
+    video_id = request.args.get('video_id', '')
+    video_id = extract_video_id(video_id)
+    if not video_id:
+        return jsonify({'error': 'Invalid video ID'}), 400
+
+    # Get basic info
+    info = get_youtube_data(video_id)
+    if not info:
+        return jsonify({'error': 'Video not found'}), 404
+
+    # Get stats
+    stats = get_video_stats(video_id)
+    if stats:
+        info.update(stats)
+
+    return jsonify({'success': True, 'video': info})
+
+@app.route('/transcript', methods=['GET'])
+def transcript():
+    video_id = request.args.get('video_id', '')
+    video_id = extract_video_id(video_id)
+    if not video_id:
+        return jsonify({'error': 'Invalid video ID'}), 400
+
+    transcript = get_transcript(video_id)
+    if transcript:
+        return jsonify({'success': True, 'transcript': transcript})
+
+    return jsonify({'error': 'No transcript available'}), 404
 
 @app.route('/analyze', methods=['POST'])
 def analyze():
-    """Main AI analysis endpoint"""
     data = request.get_json()
     if not data:
         return jsonify({'error': 'No data provided'}), 400
 
     tool = data.get('tool', '')
-    title = data.get('title', '')
-    channel = data.get('channel', '')
-    views = data.get('views', 0)
-    engagement = data.get('engagement', 0)
-    transcript = data.get('transcript', '')[:4000]
-    trans_preview = transcript[:2000] if transcript else ''
+    title = data.get('title', '') or data.get('video_title', '')
+    channel = data.get('channel', '') or data.get('video_channel', '')
+    views = data.get('views', 0) or data.get('video_views', 0)
+    transcript = data.get('transcript', '')[:3000]
+    video_id = data.get('video_id', '')
 
+    # ============================================
+    #  PROMPTS - ENGLISH
+    # ============================================
     prompts = {
-        'transcript': f"""You are a professional YouTube content analyst. Analyze this video and return JSON:
+        'transcript': f"""You are a YouTube content analyst. Analyze this video:
 
-Title: {title}
-Channel: {channel}
-Views: {views}
----
-{transcript and f'Video Transcript:\n{transcript}\n---\n' or ''}
-Return JSON:
-{{"fullScript":"Full transcript with timestamps","mainTopics":["topic 1","topic 2","topic 3"],"keyPoints":["point 1","point 2","point 3","point 4"],"hookUsed":"Description of the hook used"}}
-Return JSON only, no additional text.""",
+VIDEO TITLE: {title}
+CHANNEL: {channel}
+VIEWS: {views}
+{'-' * 40}
+VIDEO TRANSCRIPT (if available):
+{transcript if transcript else 'No transcript available. Analyze based on title only.'}
+{'-' * 40}
 
-        'hook': f"""You are a YouTube hook expert. Analyze this video:
+Generate REAL content. Do NOT use placeholder text like "topic 1" or "point 1".
+Write in English. Return valid JSON:
 
-Title: {title}
-Channel: {channel}
-Views: {views}
-Engagement: {engagement}%
-{trans_preview and f'Transcript:\n{trans_preview}\n---\n' or ''}
-Return JSON:
-{{"hookAnalysis":"Detailed analysis of the hook - words used, psychological triggers, style","whyViral":["reason 1","reason 2","reason 3","reason 4","reason 5"],"suggestedHooks":["hook 1","hook 2","hook 3","hook 4","hook 5"]}}
-Return JSON only.""",
+{{
+    "fullScript": "Actual transcript text with timestamps - write out real content",
+    "mainTopics": ["Real specific topic 1", "Real specific topic 2", "Real specific topic 3"],
+    "keyPoints": ["Real key point 1", "Real key point 2", "Real key point 3", "Real key point 4"],
+    "hookUsed": "Real description of how the video starts"
+}}
 
-        'script': f"""You are a professional YouTube script writer. Create a similar script for this video:
+JSON ONLY. No markdown. No text before or after.""",
 
-Title: {title}
-Channel: {channel}
-{trans_preview and f'Transcript:\n{trans_preview}\n---\n' or ''}
-Return JSON:
-{{"newHook":"Strong hook for first seconds - exact words","newScript":"Full script with timestamps and formatting","keyMoments":["moment 1","moment 2","moment 3","moment 4"]}}
-Return JSON only.""",
+        'hook': f"""You are a YouTube hook expert. Analyze the opening of this video:
 
-        'titles': f"""You are a YouTube SEO expert. Suggest 10 titles for this video:
+TITLE: {title}
+CHANNEL: {channel}
+VIEWS: {views}
+{'-' * 40}
+VIDEO CONTENT:
+{transcript[:1500] if transcript else 'No transcript. Analyze based on title.'}
+{'-' * 40}
 
-Original Title: {title}
-Channel: {channel}
-Views: {views}
-{trans_preview and f'Content Summary:\n{trans_preview[:500]}\n' or ''}
+Generate REAL insights. Do NOT use placeholder text like "hook 1" or "reason 1".
+Write in English. Return valid JSON:
+
+{{
+    "hookAnalysis": "Detailed real analysis of the opening hook - what words are used, what psychological triggers, how it grabs attention",
+    "whyViral": ["Real reason video went viral 1", "Real reason 2", "Real reason 3", "Real reason 4", "Real reason 5"],
+    "suggestedHooks": ["Real hook suggestion 1", "Real hook suggestion 2", "Real hook suggestion 3", "Real hook suggestion 4", "Real hook suggestion 5"]
+}}
+
+JSON ONLY. No text before or after.""",
+
+        'script': f"""You are a YouTube script writer. Create a similar script:
+
+TITLE: {title}
+CHANNEL: {channel}
+{'-' * 40}
+VIDEO CONTENT:
+{transcript[:1500] if transcript else 'No transcript. Analyze based on title.'}
+{'-' * 40}
+
+Generate REAL script. Do NOT use placeholder text.
+Write in English. Return valid JSON:
+
+{{
+    "newHook": "Real strong hook - exact words to say in first 5 seconds",
+    "newScript": "Real script outline - write actual content, not placeholders. Include timing and key moments",
+    "keyMoments": ["Real key moment 1", "Real key moment 2", "Real key moment 3", "Real key moment 4"]
+}}
+
+JSON ONLY.""",
+
+        'titles': f"""You are a YouTube SEO expert. Generate 10 click-worthy titles:
+
+VIDEO TITLE: {title}
+CHANNEL: {channel}
+VIEWS: {views}
+{'-' * 40}
+CONTENT SUMMARY:
+{transcript[:800] if transcript else 'No transcript. Use your creativity.'}
+{'-' * 40}
+
 Requirements:
 - Each title under 60 characters
 - Different from original title
-- Use psychological triggers (curiosity, FOMO, numbers, emotion)
-- Click-worthy
+- Click-worthy, use psychological triggers
+- Real titles, not placeholders
 
-Return JSON array:
-["title 1","title 2","title 3","title 4","title 5","title 6","title 7","title 8","title 9","title 10"]""",
+Return JSON array of 10 strings:
+["Real Title 1", "Real Title 2", "Real Title 3", "Real Title 4", "Real Title 5", "Real Title 6", "Real Title 7", "Real Title 8", "Real Title 9", "Real Title 10"]
 
-        'desc': f"""You are a professional YouTube description writer. Write SEO description for this video:
+JSON ONLY. No text before or after.""",
 
-Title: {title}
-Channel: {channel}
-{trans_preview and f'Content:\n{trans_preview[:800]}\n' or ''}
-Return JSON:
-{{"description":"Professional description 150-250 words - engaging opener, key points, timestamps, CTA","hashtags":"#hashtag1 #hashtag2 #hashtag3 ..."}}
-Return JSON only."""
+        'desc': f"""You are a YouTube description writer. Create SEO description:
+
+TITLE: {title}
+CHANNEL: {channel}
+{'-' * 40}
+CONTENT:
+{transcript[:1000] if transcript else 'No transcript.'}
+{'-' * 40}
+
+Write in English. Return JSON:
+{{
+    "description": "Real engaging description 150-250 words - include key points, timestamps if relevant, call to action. NOT placeholder text.",
+    "hashtags": ["#realhashtag1", "#realhashtag2", "#realhashtag3", "#realhashtag4", "#realhashtag5", "#realhashtag6"]
+}}
+
+JSON ONLY."""
     }
 
     if tool not in prompts:
@@ -212,8 +274,7 @@ Return JSON only."""
     if not client:
         return jsonify({'error': 'OpenAI API not configured'}), 500
 
-    result = ask_ai(prompts[tool], "Return JSON only, no additional text.")
-
+    result = ask_ai(prompts[tool])
     if not result or result.startswith('Error:'):
         return jsonify({'error': result or 'AI request failed'}), 500
 
@@ -225,9 +286,6 @@ Return JSON only."""
     except:
         return jsonify({'success': True, 'result': result})
 
-# ============================================
-#  START
-# ============================================
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
