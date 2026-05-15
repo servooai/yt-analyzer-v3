@@ -118,6 +118,9 @@
         <div class="stat-item"><div class="value" id="sComments">-</div><div class="label">Comments</div></div>
         <div class="stat-item highlight"><div class="value" id="sEngagement">-</div><div class="label">Engagement</div></div>
       </div>
+      <div id="viralStatus" style="display:none; margin-top: 0.75rem; text-align: center;">
+        <span id="viralBadge"></span>
+      </div>
     </div>
 
     <div class="tools-grid">
@@ -188,6 +191,35 @@
       document.getElementById('statusText').textContent = text;
     }
 
+    // ================================
+    //  VIRAL DETECTOR
+    // ================================
+    function getViralStatus(views, likes, comments) {
+      const engagement = views > 0 ? ((likes + comments) / views * 100) : 0;
+      
+      if (engagement >= 5) {
+        return { status: '🔥 VIRAL', color: '#FF4757', bg: 'rgba(255,71,87,0.15)', border: '#FF4757' };
+      } else if (engagement >= 2) {
+        return { status: '✅ NORMAL', color: '#00FF88', bg: 'rgba(0,255,136,0.15)', border: '#00FF88' };
+      } else if (engagement >= 1) {
+        return { status: '⚠️ AVERAGE', color: '#FFD700', bg: 'rgba(255,215,0,0.15)', border: '#FFD700' };
+      } else {
+        return { status: '🔴 WEAK', color: '#A0A0B0', bg: 'rgba(160,160,176,0.15)', border: '#A0A0B0' };
+      }
+    }
+
+    function updateViralStatus(views, likes, comments) {
+      const viralDiv = document.getElementById('viralStatus');
+      const badge = document.getElementById('viralBadge');
+      const info = getViralStatus(views, likes, comments);
+      
+      badge.textContent = info.status;
+      badge.style.background = info.bg;
+      badge.style.border = '1px solid ' + info.border;
+      badge.style.color = info.color;
+      viralDiv.style.display = 'block';
+    }
+
     async function init() {
       try {
         const res = await fetch(BACKEND_URL + '/health', { timeout: 8000 });
@@ -244,6 +276,9 @@
         document.getElementById('sComments').textContent = fmtNum(currentVideo.comments);
         document.getElementById('sEngagement').textContent = currentVideo.engagement + '%';
         document.getElementById('videoInfo').classList.add('show');
+
+        // Update Viral Status
+        updateViralStatus(currentVideo.views, currentVideo.likes, currentVideo.comments);
 
         // Reset transcript
         realTranscript = '';
