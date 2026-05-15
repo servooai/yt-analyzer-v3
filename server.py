@@ -5,12 +5,11 @@ YouTube AI Analyzer - Backend Server
 import os
 import re
 import json
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from youtube_transcript_api import YouTubeTranscriptApi
-from openai import OpenAI
 import urllib.request
 import urllib.error
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from openai import OpenAI
 
 app = Flask(__name__)
 CORS(app)
@@ -53,7 +52,6 @@ def ask_ai(prompt, system=None):
         return f"Error: {str(e)}"
 
 def get_youtube_data(video_id):
-    """Get video info from YouTube oEmbed (no API key needed)"""
     try:
         url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -64,73 +62,136 @@ def get_youtube_data(video_id):
             'author': data.get('author_name', ''),
             'thumbnail': data.get('thumbnail_url', '')
         }
-    except Exception as e:
-        print(f"oEmbed error: {e}")
+    except:
         return None
 
 def get_video_stats(video_id):
-    """Get video stats from YouTube Data API v3"""
     if not GOOGLE_API_KEY:
-        print("No Google API Key - stats will be 0")
         return None
-    
     try:
         url = f"https://www.googleapis.com/youtube/v3/videos?part=statistics,snippet&id={video_id}&key={GOOGLE_API_KEY}"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
-        
         if not data.get('items'):
             return None
-        
         item = data['items'][0]
         stats = item.get('statistics', {})
         snippet = item.get('snippet', {})
-        
         return {
             'viewCount': stats.get('viewCount', '0'),
             'likeCount': stats.get('likeCount', '0'),
             'commentCount': stats.get('commentCount', '0'),
-            'favoriteCount': stats.get('favoriteCount', '0'),
             'title': snippet.get('title', ''),
-            'channel': snippet.get('channelTitle', ''),
-            'publishedAt': snippet.get('publishedAt', ''),
-            'description': snippet.get('description', '')
+            'channel': snippet.get('channelTitle', '')
         }
-    except urllib.error.HTTPError as e:
-        print(f"Google API HTTP error: {e.code} - {e.read()}")
-        return None
-    except Exception as e:
-        print(f"Google API error: {e}")
+    except:
         return None
 
 def get_transcript(video_id):
-    """Get YouTube transcript using youtube-transcript-api"""
+    """
+    Get YouTube transcript using youtube-transcript-api.
+    Tries multiple methods to get captions including auto-generated.
+    """
     try:
-        ytt = YouTubeTranscriptApi()
-        # Try to get transcript in multiple languages
+        from youtube_transcript_api import YouTubeTranscriptApi, TranscriptsDisabled, NoTranscriptFound
+        
+        # Method 1: Try with YouTubeTranscriptApi directly (correct way for auto-captions)
         try:
-            # Try English first
-            transcript_list = ytt.fetch(video_id, languages=['en'])
-        except:
+            # Get transcript list first
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            
+            # Try to find any transcript (including auto-generated)
             try:
-                # Try any available language
-                transcript_list = ytt.fetch(video_id)
+                # Try auto-generated English first
+                transcript = transcript_list.find_transcript(['en'])
             except:
-                # Try with proxy
-                transcript_list = ytt.fetch(video_id, languages=['en', 'ar', 'es', 'de', 'fr', 'pt', 'it', 'ru', 'ja', 'ko', 'zh-Hans', 'zh-Hant'])
+                try:
+                    # Try any English transcript
+                    transcript = transcript_list.find_transcript(['en-US', 'en-GB'])
+                except:
+                    # Get the first available transcript
+                    transcript = transcript_list.find_transcript(['en'])
+            
+            # Fetch the actual transcript data
+            transcript_data = transcript.fetch()
+            
+            lines = []
+            for entry in transcript_data:
+                mins = int(entry.start) // 60
+                secs = int(entry.start) % 60
+                text = entry.text.replace('\n', ' ').replace('&amp;', '&').replace('&quot;', '"').replace('&#39;', "'").replace('<[^>]+>', '').strip()
+                if text and len(text) > 1:
+                    lines.append(f"[{mins:02d}:{secs:02d}] {text}")
+            
+            if lines:
+                return '\n'.join(lines)
+                
+        except Exception as e:
+            print(f"Method 1 failed: {e}")
         
-        lines = []
-        for entry in transcript_list:
-            mins = int(entry.start) // 60
-            secs = int(entry.start) % 60
-            text = entry.text.replace('\n', ' ').replace('&amp;', '&').replace('&quot;', '"').replace('&#39;', "'").strip()
-            if text:
-                lines.append(f"[{mins:02d}:{secs:02d}] {text}")
+        # Method 2: Try manual approach with languages
+        try:
+            # Get all available transcripts info
+            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+            
+            all_transcripts = []
+            for transcript in transcript_list:
+                all_transcripts.append({
+                    'language_code': transcript.language_code,
+                    'language': transcript.language,
+                    'is_generated': transcript.is_generated,
+                    'is_translatable': transcript.is_translatable
+                })
+            
+            print(f"Available transcripts: {all_transcripts}")
+            
+            # Try each transcript
+            for ts_info in all_transcripts:
+                try:
+                    transcript = transcript_list.find_transcript([ts_info['language_code']])
+                    data = transcript.fetch()
+                    lines = []
+                    for entry in data:
+                        mins = int(entry.start) // 60
+                        secs = int(entry.start) % 60
+                        text = entry.text.replace('\n', ' ').strip()
+                        if text:
+                            lines.append(f"[{mins:02d}:{secs:02d}] {text}")
+                    if lines:
+                        return '\n'.join(lines)
+                except:
+                    continue
+                    
+        except Exception as e:
+            print(f"Method 2 failed: {e}")
         
-        return '\n'.join(lines) if lines else None
+        # Method 3: Try the old way (fetch without list)
+        try:
+            from youtube_transcript_api import YouTubeTranscriptApi
+            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'en-US'])
+            lines = []
+            for entry in transcript:
+                mins = int(entry['start']) // 60
+                secs = int(entry['start']) % 60
+                text = entry['text'].replace('\n', ' ').strip()
+                if text:
+                    lines.append(f"[{mins:02d}:{secs:02d}] {text}")
+            if lines:
+                return '\n'.join(lines)
+        except Exception as e:
+            print(f"Method 3 failed: {e}")
+        
+        return None
+        
+    except TranscriptsDisabled:
+        print("Transcripts are disabled for this video")
+        return None
+    except NoTranscriptFound:
+        print("No transcript found for this video")
+        return None
     except Exception as e:
-        print(f"Transcript fetch error: {e}")
+        print(f"Transcript error: {type(e).__name__}: {e}")
         return None
 
 # ============================================
@@ -141,13 +202,11 @@ def health():
     return jsonify({
         'status': 'ok',
         'ai': bool(client),
-        'google': bool(GOOGLE_API_KEY),
-        'google_key': GOOGLE_API_KEY[:10] + '...' if GOOGLE_API_KEY else None
+        'google': bool(GOOGLE_API_KEY)
     })
 
 @app.route('/video', methods=['GET'])
 def video():
-    """Get video info and stats"""
     video_id = request.args.get('video_id', '')
     video_id = extract_video_id(video_id)
     if not video_id:
@@ -161,7 +220,6 @@ def video():
     if stats:
         info.update(stats)
     else:
-        # Fill with zeros if no Google API
         info['viewCount'] = '0'
         info['likeCount'] = '0'
         info['commentCount'] = '0'
@@ -194,14 +252,10 @@ def analyze():
     transcript = data.get('transcript', '')[:4000]
     video_id = data.get('video_id', '')
 
-    # Check if we have real transcript
-    has_real_transcript = bool(transcript and len(transcript) > 50 and '[' not in transcript[:100])
+    has_real_transcript = bool(transcript and len(transcript) > 50)
 
-    # ============================================
-    #  PROMPTS - ENGLISH
-    # ============================================
     prompts = {
-        'transcript': f"""You are a YouTube content analyst. Analyze this video using REAL transcript if available.
+        'transcript': f"""You are a YouTube content analyst.
 
 VIDEO TITLE: {title}
 CHANNEL: {channel}
@@ -209,99 +263,76 @@ VIEWS: {views}
 HAS REAL TRANSCRIPT: {'Yes' if has_real_transcript else 'No'}
 {'-' * 40}
 VIDEO TRANSCRIPT:
-{transcript if transcript else 'NO TRANSCRIPT AVAILABLE - Must say "No transcript available for this video." Do NOT generate fake transcript. Do NOT guess what the video says. Be honest.'}
+{transcript if transcript else 'NO TRANSCRIPT - The analysis MUST be based on title: "' + title + '". Be honest that no transcript is available.'}
 {'-' * 40}
 
-IMPORTANT RULES:
-- If NO transcript available: Write "No transcript available for this video. The analysis is based on the title only: '{title}'" in every field. Do NOT make up content.
-- If transcript IS available: Analyze the REAL transcript content.
-- NEVER use placeholder text like "topic 1", "point 1", "hook 1"
-- Write in English. Return valid JSON only.
+RULES:
+- If NO transcript: Say "No transcript available" in every field
+- NEVER use placeholder text like "topic 1", "point 1"
+- Return valid JSON only
 
-JSON format:
+JSON:
 {{
-    "fullScript": "REAL transcript text with timestamps. If no transcript, write honest message.",
-    "mainTopics": ["Real topic 1", "Real topic 2", "Real topic 3"],
-    "keyPoints": ["Real key point 1", "Real key point 2", "Real key point 3", "Real key point 4"],
-    "hookUsed": "Real hook description from actual content"
+    "fullScript": "Real content or honest message about no transcript",
+    "mainTopics": ["Topic 1", "Topic 2", "Topic 3"],
+    "keyPoints": ["Point 1", "Point 2", "Point 3", "Point 4"],
+    "hookUsed": "Description"
 }}
 
-JSON ONLY. No text before or after.""",
+JSON ONLY.""",
 
-        'hook': f"""You are a YouTube hook expert. Analyze this video:
+        'hook': f"""You are a YouTube hook expert.
 
-VIDEO TITLE: {title}
+TITLE: {title}
 CHANNEL: {channel}
 VIEWS: {views}
-{'-' * 40}
-VIDEO CONTENT:
-{transcript[:2000] if transcript else 'No transcript available. Analyze based on title only: ' + title}
+CONTENT:
+{transcript[:2000] if transcript else 'No transcript available. Based on title only.'}
 {'-' * 40}
 
-Generate REAL insights. NEVER use placeholder text.
-If no transcript: say "No transcript available" honestly.
-Write in English. Return valid JSON:
-
+Return JSON:
 {{
-    "hookAnalysis": "Detailed real analysis of the opening",
-    "whyViral": ["Real reason 1", "Real reason 2", "Real reason 3", "Real reason 4", "Real reason 5"],
+    "hookAnalysis": "Real analysis",
+    "whyViral": ["Reason 1", "Reason 2", "Reason 3", "Reason 4", "Reason 5"],
     "suggestedHooks": ["Hook 1", "Hook 2", "Hook 3", "Hook 4", "Hook 5"]
 }}
 
 JSON ONLY.""",
 
-        'script': f"""You are a YouTube script writer. Create a similar script:
+        'script': f"""You are a YouTube script writer.
 
 TITLE: {title}
 CHANNEL: {channel}
-{'-' * 40}
-VIDEO CONTENT:
-{transcript[:2000] if transcript else 'No transcript. Be honest: say no transcript available.'}
+CONTENT:
+{transcript[:2000] if transcript else 'No transcript'}
 {'-' * 40}
 
-Generate REAL script based on actual video content.
-If no transcript: honestly say "No transcript available".
-Write in English. Return JSON:
-
+Return JSON:
 {{
-    "newHook": "Real hook - exact first 5 seconds",
+    "newHook": "Real hook",
     "newScript": "Real script with timing",
     "keyMoments": ["Moment 1", "Moment 2", "Moment 3", "Moment 4"]
 }}
 
 JSON ONLY.""",
 
-        'titles': f"""You are a YouTube SEO expert. Generate 10 click-worthy titles:
+        'titles': f"""You are a YouTube SEO expert.
 
-VIDEO TITLE: {title}
+TITLE: {title}
 CHANNEL: {channel}
 VIEWS: {views}
-{'-' * 40}
-CONTENT:
-{transcript[:1000] if transcript else 'No transcript - use creativity based on title'}
-{'-' * 40}
 
-Requirements:
-- Each title under 60 characters
-- Different from original
-- Click-worthy
-- Real titles, not placeholders
-
-Return JSON array:
+Return JSON array of 10 strings:
 ["Title 1", "Title 2", "Title 3", "Title 4", "Title 5", "Title 6", "Title 7", "Title 8", "Title 9", "Title 10"]
 
 JSON ONLY.""",
 
-        'desc': f"""You are a YouTube description writer. Create SEO description:
+        'desc': f"""You are a YouTube description writer.
 
 TITLE: {title}
 CHANNEL: {channel}
-{'-' * 40}
-CONTENT:
-{transcript[:1000] if transcript else 'No transcript'}
-{'-' * 40}
 
-Write in English. Return JSON:
+Return JSON:
 {{
     "description": "Real description 150-250 words",
     "hashtags": ["#tag1", "#tag2", "#tag3", "#tag4", "#tag5", "#tag6"]
